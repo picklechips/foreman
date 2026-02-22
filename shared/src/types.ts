@@ -139,7 +139,7 @@ export const SessionHistoryRequestSchema = z.object({
   type: z.literal("session.history"),
   id: z.string(),
   sessionId: z.string().uuid(),
-  limit: z.number().int().min(1).max(500).optional().default(100),
+  limit: z.number().int().min(1).max(500).default(100),
 });
 
 export const ClientRequestSchema = z.discriminatedUnion("type", [
@@ -152,13 +152,26 @@ export const ClientRequestSchema = z.discriminatedUnion("type", [
 ]);
 export type ClientRequest = z.infer<typeof ClientRequestSchema>;
 
+// Full union of everything a client can send (auth handshake + requests).
+// Relay uses this as its single parse point for all incoming messages.
+export const ClientMessageSchema = z.discriminatedUnion("type", [
+  AuthMessageSchema,
+  SessionListRequestSchema,
+  SessionCreateRequestSchema,
+  SessionMessageRequestSchema,
+  SessionInterruptRequestSchema,
+  SessionDestroyRequestSchema,
+  SessionHistoryRequestSchema,
+]);
+export type ClientMessage = z.infer<typeof ClientMessageSchema>;
+
 // ─── Transcript ───────────────────────────────────────────────────────────────
 
 export const TranscriptEntrySchema = z.object({
   id: z.string().uuid(),
   role: z.enum(["user", "assistant", "tool"]),
   content: z.string(),
-  ts: z.string().datetime(),
+  timestamp: z.string().datetime(),
   toolCall: z
     .object({ tool: z.string(), input: z.record(z.unknown()) })
     .optional(),
@@ -173,6 +186,7 @@ export type TranscriptEntry = z.infer<typeof TranscriptEntrySchema>;
 export const RelayConfigSchema = z.object({
   port: z.number().int().min(1024).max(65535).default(7821),
   hooksPort: z.number().int().min(1024).max(65535).default(7822),
+  bindHost: z.string().default("127.0.0.1"),
   allowedDirs: z.array(z.string()).min(1),
   model: z.string().default("claude-opus-4-6"),
   ntfyTopic: z.string().default(""),

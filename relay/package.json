@@ -10,18 +10,18 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "dev": "node --watch dist/main.js",
+    "dev": "tsx watch src/main.ts",
     "start": "node dist/main.js",
     "test": "node --experimental-vm-modules node_modules/.bin/jest"
   },
   "dependencies": {
     "@foreman/shared": "workspace:*",
-    "ws": "^8.17.0",
-    "zod": "^3.23.0"
+    "ws": "^8.17.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.10",
+    "tsx": "^4.11.0",
     "typescript": "^5.4.0"
   }
 }

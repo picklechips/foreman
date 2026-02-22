@@ -18,9 +18,9 @@ YELLOW='\033[1;33m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
-ok()   { echo -e "${GREEN}✓${RESET} $1"; }
-warn() { echo -e "${YELLOW}⚠${RESET}  $1"; }
-err()  { echo -e "${RED}✗${RESET} $1"; exit 1; }
+ok()     { echo -e "${GREEN}✓${RESET} $1"; }
+warn()   { echo -e "${YELLOW}⚠${RESET}  $1"; }
+err()    { echo -e "${RED}✗${RESET} $1"; exit 1; }
 header() { echo -e "\n${BOLD}$1${RESET}"; }
 
 # ─── Dependency checks ────────────────────────────────────────────────────────
@@ -68,7 +68,9 @@ fi
 header "Creating ~/.foreman directory structure..."
 
 mkdir -p "$FOREMAN_DIR"/{transcripts,pipes,logs}
-chmod 700 "$FOREMAN_DIR"
+# Set restrictive permissions on all foreman directories — transcripts contain
+# conversation history and pipes are used for process communication.
+chmod 700 "$FOREMAN_DIR" "$FOREMAN_DIR/transcripts" "$FOREMAN_DIR/pipes" "$FOREMAN_DIR/logs"
 ok "Created $FOREMAN_DIR"
 
 # ─── Generate bearer token (only if not already set) ─────────────────────────
@@ -80,8 +82,6 @@ else
   ok "Bearer token already exists (not overwritten)"
 fi
 
-TOKEN=$(cat "$TOKEN_FILE")
-
 # ─── Write config (only if not already set) ───────────────────────────────────
 if [ ! -f "$CONFIG_FILE" ]; then
   # Prompt for allowed directories
@@ -91,32 +91,35 @@ if [ ! -f "$CONFIG_FILE" ]; then
   read -r -p "Allowed directories [~/projects]: " ALLOWED_INPUT
   ALLOWED_INPUT="${ALLOWED_INPUT:-~/projects}"
 
-  # Convert comma-separated input to JSON array
-  IFS=',' read -ra DIRS <<< "$ALLOWED_INPUT"
-  JSON_DIRS="["
-  for i in "${!DIRS[@]}"; do
-    DIR="${DIRS[$i]// /}"  # trim spaces
-    if [ $i -gt 0 ]; then JSON_DIRS+=","; fi
-    JSON_DIRS+="\"$DIR\""
-  done
-  JSON_DIRS+="]"
-
   # Prompt for ntfy topic
   echo ""
   echo "Foreman uses ntfy.sh for push notifications."
   echo "Leave blank to skip (you can add it later in $CONFIG_FILE)."
   read -r -p "ntfy topic name (or leave blank): " NTFY_TOPIC
 
-  cat > "$CONFIG_FILE" << EOF
-{
-  "port": 7821,
-  "hooksPort": $HOOKS_PORT,
-  "bindHost": "$BIND_HOST",
-  "allowedDirs": $JSON_DIRS,
-  "model": "claude-opus-4-6",
-  "ntfyTopic": "$NTFY_TOPIC"
-}
-EOF
+  # Use node to safely serialize config to JSON — avoids shell string injection
+  # from user-supplied directory paths or ntfy topic values.
+  node - "$CONFIG_FILE" "$BIND_HOST" "$ALLOWED_INPUT" "${NTFY_TOPIC:-}" "$HOOKS_PORT" << 'JSEOF'
+const fs = require('fs');
+const [, , configPath, bindHost, allowedInput, ntfyTopic, hooksPort] = process.argv;
+
+const allowedDirs = allowedInput
+  .split(',')
+  .map(d => d.trim())
+  .filter(Boolean);
+
+const config = {
+  port: 7821,
+  hooksPort: parseInt(hooksPort, 10),
+  bindHost,
+  allowedDirs,
+  model: 'claude-opus-4-6',
+  ntfyTopic: ntfyTopic || '',
+};
+
+fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+JSEOF
+
   chmod 600 "$CONFIG_FILE"
   ok "Created $CONFIG_FILE"
 else
@@ -136,12 +139,11 @@ fi
 # Use node to safely merge hooks into existing settings (avoids clobbering)
 node - "$CLAUDE_SETTINGS" "$HOOKS_PORT" << 'JSEOF'
 const fs = require('fs');
-const path = process.argv[2];
-const hooksPort = process.argv[3];
+const [, , settingsPath, hooksPort] = process.argv;
 
 let settings = {};
 try {
-  settings = JSON.parse(fs.readFileSync(path, 'utf8'));
+  settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
 } catch {}
 
 settings.hooks = settings.hooks ?? {};
@@ -149,19 +151,18 @@ settings.hooks = settings.hooks ?? {};
 settings.hooks.Stop = [{
   hooks: [{
     type: 'command',
-    command: `curl -s -X POST http://127.0.0.1:${hooksPort}/hook/stop -H 'Content-Type: application/json' -d @-`
-  }]
+    command: `curl -s -X POST http://127.0.0.1:${hooksPort}/hook/stop -H 'Content-Type: application/json' -d @-`,
+  }],
 }];
 
 settings.hooks.Notification = [{
   hooks: [{
     type: 'command',
-    command: `curl -s -X POST http://127.0.0.1:${hooksPort}/hook/notification -H 'Content-Type: application/json' -d @-`
-  }]
+    command: `curl -s -X POST http://127.0.0.1:${hooksPort}/hook/notification -H 'Content-Type: application/json' -d @-`,
+  }],
 }];
 
-fs.writeFileSync(path, JSON.stringify(settings, null, 2));
-console.log('ok');
+fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
 JSEOF
 
 ok "Claude Code hooks installed → $CLAUDE_SETTINGS"
@@ -211,10 +212,11 @@ echo "Add these details to the Foreman app on your phone:"
 echo ""
 echo -e "  ${BOLD}Host:${RESET}  ${BIND_HOST}"
 echo -e "  ${BOLD}Port:${RESET}  7821"
-echo -e "  ${BOLD}Token:${RESET} ${TOKEN}"
+echo -e "  ${BOLD}Token:${RESET} (run: cat ${TOKEN_FILE})"
 
-if [ -n "${NTFY_TOPIC:-}" ]; then
-echo -e "  ${BOLD}ntfy topic:${RESET} ${NTFY_TOPIC}"
+NTFY_TOPIC_SAVED=$(node -e "try{const c=require('${CONFIG_FILE}');console.log(c.ntfyTopic||'')}catch{}" 2>/dev/null || echo "")
+if [ -n "$NTFY_TOPIC_SAVED" ]; then
+  echo -e "  ${BOLD}ntfy topic:${RESET} ${NTFY_TOPIC_SAVED}"
 fi
 
 echo ""
